@@ -71,34 +71,134 @@ export const createUser = async (req, res) => {
 
 // 📝 Update user
 export const updateUser = async (req, res) => {
-  const { id } = req.params;
-  const fields = req.body;
+  const { id } = req.params; // id ของ user ที่จะอัปเดต (user_id)
+  const fields = { ...req.body }; // สำเนาเพื่อแก้ไขได้ปลอดภัย
 
   try {
     // ถ้า body ว่างเปล่า
-    if (Object.keys(fields).length === 0) {
+    if (!fields || Object.keys(fields).length === 0) {
       return res.status(400).json({ error: "No fields provided to update" });
     }
 
-    // สร้าง query แบบ dynamic เช่น:
-    // UPDATE users SET full_name=?, status=? WHERE id=?
+    // --- กำหนดฟิลด์ที่อนุญาตให้เปลี่ยนได้ (whitelist) ---
+    const allowedFields = [
+      "username",
+      "password",
+      "full_name",
+      "role",
+      "status",
+    ];
+    const updates = {};
+    for (const [k, v] of Object.entries(fields)) {
+      if (allowedFields.includes(k)) updates[k] = v;
+      // ถ้าเจอฟิลด์ที่ไม่อนุญาต จะถูกข้ามโดยอัตโนมัติ
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: "No updatable fields provided" });
+    }
+
+    // --- VALIDATIONS ---
+    // username: ห้ามมีช่องว่าง, อนุญาตแค่ A-Z a-z 0-9 . _ -
+    if (updates.username !== undefined) {
+      const username = String(updates.username).trim();
+      const usernameRegex = /^[A-Za-z0-9._-]+$/;
+      if (
+        !username ||
+        !usernameRegex.test(username) ||
+        username.includes(" ")
+      ) {
+        return res.status(400).json({
+          error:
+            "Username must contain only letters, numbers, dots, underscores, or hyphens (no spaces)",
+        });
+      }
+
+      // ตรวจว่าชื่อผู้ใช้ไม่ซ้ำกับคนอื่น (exclude ตัวเอง)
+      const [existing] = await db.query(
+        "SELECT user_id FROM users WHERE username = ? AND user_id <> ?",
+        [username, id]
+      );
+      if (existing.length > 0) {
+        return res.status(409).json({ error: "Username already taken" });
+      }
+
+      updates.username = username;
+    }
+
+    // password: ห้ามเว้นว่างล้วน, ต้องมีความยาว >= 6
+    if (updates.password !== undefined) {
+      const pwd = String(updates.password);
+      if (pwd.trim().length < 6) {
+        return res.status(400).json({
+          error:
+            "Password must be at least 6 characters long and cannot be only spaces",
+        });
+      }
+      // ทำ hashing และเปลี่ยนเป็น password_hash แทน
+      const salt = await bcrypt.genSalt(10);
+      const hash = await bcrypt.hash(pwd, salt);
+      updates.password_hash = hash;
+      delete updates.password; // อย่าเก็บ plaintext
+    }
+
+    // full_name: ห้ามขึ้นต้นด้วย space, ห้ามมี space ซ้อน, อนุญาตเฉพาะตัวอักษรและช่องว่าง
+    if (updates.full_name !== undefined) {
+      const fullName = String(updates.full_name);
+      const nameRegex = /^(?! )[A-Za-z]+( [A-Za-z]+)*$/;
+      if (!nameRegex.test(fullName)) {
+        return res.status(400).json({
+          error:
+            "Full name must contain only English letters, cannot start with space, and cannot have multiple spaces",
+        });
+      }
+      updates.full_name = fullName.trim();
+    }
+
+    // role: ถ้ามี ให้ตรวจว่าเป็นค่าที่อนุญาต (ปรับแก้ได้เฉพาะค่าที่ระบบยอมรับ)
+    if (updates.role !== undefined) {
+      const allowedRoles = ["admin", "staff"];
+      if (!allowedRoles.includes(String(updates.role))) {
+        return res.status(400).json({ error: "Invalid role value" });
+      }
+    }
+
+    // status: ตรวจค่าที่อนุญาต
+    if (updates.status !== undefined) {
+      const allowedStatus = ["active", "inactive"];
+      if (!allowedStatus.includes(String(updates.status))) {
+        return res.status(400).json({ error: "Invalid status value" });
+      }
+    }
+
+    // --- สร้าง dynamic update query (ปลอดภัยด้วย parameterized values) ---
     const columns = [];
     const values = [];
 
-    for (const [key, value] of Object.entries(fields)) {
-      columns.push(`${key}=?`);
+    for (const [key, value] of Object.entries(updates)) {
+      // อย่าให้ผู้ใช้อัปเดต created_at หรือ user_id ผ่านไฟล์นี้ (ไม่อยู่ใน allowedFields)
+      columns.push(`${key} = ?`);
       values.push(value);
+    }
+
+    // ถ้าไม่มี columns อะไรจะไม่รัน
+    if (columns.length === 0) {
+      return res.status(400).json({ error: "No valid fields to update" });
     }
 
     const sql = `UPDATE users SET ${columns.join(
       ", "
-    )}, updated_at=NOW() WHERE user_id=?`;
+    )}, updated_at = NOW() WHERE user_id = ?`;
     values.push(id);
 
     await db.query(sql, values);
 
     res.json({ message: "User updated successfully" });
   } catch (err) {
+    // ถ้าฐานข้อมูลส่ง error ระบุค่า duplicate key, สามารถจับแยกได้ (ตัวอย่าง)
+    if (err && err.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({ error: "Duplicate entry" });
+    }
     res.status(500).json({ error: err.message });
   }
 };
