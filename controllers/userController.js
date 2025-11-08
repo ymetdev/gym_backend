@@ -18,8 +18,41 @@ export const getUsers = async (req, res) => {
 export const createUser = async (req, res) => {
   const { username, password, full_name, role } = req.body;
 
-  if (!username || !password)
-    return res.status(400).json({ message: "Username and password required" });
+  // ✅ ตรวจว่ามีค่าครบ
+  if (!username || !password || !full_name) {
+    return res.status(400).json({
+      message: "Username, password, and full name are required",
+    });
+  }
+
+  // ✅ ตรวจ username: ห้ามว่าง, ห้ามเป็นช่องว่าง, ห้ามมี space
+  const usernameRegex = /^[A-Za-z0-9._-]+$/; // อนุญาตเฉพาะตัวอักษร/ตัวเลข/._-
+  if (!usernameRegex.test(username.trim()) || username.includes(" ")) {
+    return res.status(400).json({
+      message:
+        "Username must contain only letters, numbers, dots, underscores, or hyphens (no spaces)",
+    });
+  }
+
+  // ✅ ตรวจ password: ห้ามว่าง, ห้ามเป็นช่องว่างล้วน, ต้องมีความยาว >= 6 ตัว
+  if (password.trim().length < 6) {
+    return res.status(400).json({
+      message:
+        "Password must be at least 6 characters long and cannot contain only spaces",
+    });
+  }
+
+  // ✅ ตรวจ full_name:
+  // - ห้ามขึ้นต้นด้วยช่องว่าง
+  // - ห้ามมีช่องว่างซ้อนกัน
+  // - อนุญาตเฉพาะตัวอักษรและช่องว่างระหว่างคำ
+  const nameRegex = /^(?! )[A-Za-z]+( [A-Za-z]+)*$/;
+  if (!nameRegex.test(full_name)) {
+    return res.status(400).json({
+      message:
+        "Full name must contain only English letters, cannot start with space, and cannot have multiple spaces",
+    });
+  }
 
   try {
     const salt = await bcrypt.genSalt(10);
@@ -27,7 +60,7 @@ export const createUser = async (req, res) => {
 
     await db.query(
       "INSERT INTO users (username, password_hash, full_name, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', NOW(), NOW())",
-      [username, hash, full_name, role || "staff"]
+      [username.trim(), hash, full_name.trim(), role || "staff"]
     );
 
     res.status(201).json({ message: "User created successfully" });
