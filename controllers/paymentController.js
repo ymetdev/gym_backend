@@ -56,8 +56,15 @@ export const getPaymentById = async (req, res) => {
 export const createPayment = async (req, res) => {
   const { member_id, package_id, amount, staff_id } = req.body;
 
-  if (!member_id || !amount || !staff_id)
+  // ตรวจสอบช่องว่าง
+  if (!member_id || amount == null || !staff_id)
     return res.status(400).json({ message: "Missing required fields" });
+
+  // ✅ ตรวจสอบว่า amount ต้องมากกว่า 0
+  if (isNaN(amount) || amount <= 0)
+    return res
+      .status(400)
+      .json({ message: "Invalid amount. Must be a positive number." });
 
   try {
     await db.query(
@@ -65,6 +72,7 @@ export const createPayment = async (req, res) => {
        VALUES (?, ?, ?, NOW(), ?)`,
       [member_id, package_id || null, amount, staff_id]
     );
+
     res.status(201).json({ message: "Payment recorded successfully" });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -76,10 +84,22 @@ export const updatePayment = async (req, res) => {
   const { id } = req.params;
   const fields = req.body;
 
+  // ❌ ถ้าไม่มี fields ให้ update
   if (Object.keys(fields).length === 0)
     return res.status(400).json({ error: "No fields provided to update" });
 
   try {
+    // ✅ ตรวจสอบ amount ถ้ามีใน fields
+    if (fields.amount !== undefined) {
+      const amount = parseFloat(fields.amount);
+      if (isNaN(amount) || amount <= 0) {
+        return res
+          .status(400)
+          .json({ error: "Invalid amount. Must be a positive number." });
+      }
+    }
+
+    // ✅ สร้าง dynamic SQL จาก fields ที่ส่งมา
     const columns = [];
     const values = [];
 
@@ -91,7 +111,12 @@ export const updatePayment = async (req, res) => {
     const sql = `UPDATE payments SET ${columns.join(", ")} WHERE payment_id=?`;
     values.push(id);
 
-    await db.query(sql, values);
+    const [result] = await db.query(sql, values);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Payment not found" });
+    }
+
     res.json({ message: "Payment updated successfully" });
   } catch (err) {
     res.status(500).json({ error: err.message });
